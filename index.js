@@ -1,12 +1,18 @@
 import express from "express";
-import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } from "discord.js";
+import {
+  Client,
+  GatewayIntentBits,
+  REST,
+  Routes,
+  SlashCommandBuilder,
+} from "discord.js";
 import { createClient } from "@supabase/supabase-js";
 
 const {
   DISCORD_TOKEN,
   DISCORD_APP_ID,
   SUPABASE_URL,
-  SUPABASE_SERVICE_ROLE_KEY
+  SUPABASE_SERVICE_ROLE_KEY,
 } = process.env;
 
 if (!DISCORD_TOKEN || !DISCORD_APP_ID || !SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
@@ -22,88 +28,62 @@ app.get("/", (_req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Web server alive on port ${PORT}`));
 
-// --- Supabase client ---
+// --- Supabase client (not used yet, but fine to keep) ---
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
 // --- Discord client ---
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds]
+  intents: [GatewayIntentBits.Guilds],
 });
 
-// Example: simple /ping command
+// --- define commands (only /ping for now) ---
 const commands = [
   new SlashCommandBuilder()
     .setName("ping")
-    .setDescription("Replies with Pong! and shows if a module is enabled.")
-    .toJSON()
-];
+    .setDescription("Simple ping to check if the bot is responding."),
+].map((command) => command.toJSON());
 
-// Register slash commands globally
+// --- register commands ---
+const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
+
 async function registerCommands() {
   try {
-    const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
-    await rest.put(
-      Routes.applicationCommands(DISCORD_APP_ID),
-      { body: commands }
-    );
-    console.log("Slash commands registered.");
+    console.log("Started refreshing application (/) commands.");
+    await rest.put(Routes.applicationCommands(DISCORD_APP_ID), {
+      body: commands,
+    });
+    console.log("Successfully reloaded application (/) commands.");
   } catch (error) {
     console.error("Error registering commands:", error);
   }
 }
 
-// Helper: read guild features from Supabase
-async function getGuildFeatures(guildId) {
-  const { data, error } = await supabase
-    .from("guild_features")
-    .select("*")
-    .eq("guild_id", guildId)
-    .single();
-
-  if (error) {
-    console.error("Supabase guild_features error:", error.message);
-    return null;
-  }
-  return data;
-}
-
-client.once("ready", () => {
+// --- ready event ---
+client.once("ready", async () => {
   console.log(`Logged in as ${client.user.tag}`);
-  registerCommands();
+  await registerCommands();
 });
 
-// Handle slash commands
+// --- interaction handler ---
 client.on("interactionCreate", async (interaction) => {
+  // don't filter anything for now – handle all interactions
+  console.log("Interaction received:", interaction.type, interaction.commandName);
+
+  // if it's not a chat input command, ignore
   if (!interaction.isChatInputCommand()) return;
-
-  if (interaction.commandName === "ping") {
-    const guildId = interaction.guildId;
-
-    const features = await getGuildFeatures(guildId);
-    const engagementEnabled = features?.engagement_enabled ?? true; // adjust field name to match your DB
-
-    await interaction.reply(
-      `Pong! Engagement module is **${engagementEnabled ? "ENABLED" : "DISABLED"}** for this server.`
-    );
-  }
-});
-
-client.login(DISCORD_TOKEN);
-client.on("interactionCreate", async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
-
-  console.log("Received interaction:", interaction.commandName);
 
   if (interaction.commandName === "ping") {
     try {
-      // reply immediately – no Supabase, no extra logic
       await interaction.reply("Pong! ✅ Bot is alive and responding.");
       console.log("Replied to /ping");
     } catch (error) {
       console.error("Error replying to /ping:", error);
       try {
         if (!interaction.replied && !interaction.deferred) {
-          await interaction.reply({ content: "There was an error handling this command.", ephemeral: true });
+          await interaction.reply({
+            content: "There was an error handling this command.",
+            ephemeral: true,
+          });
         }
       } catch (err2) {
         console.error("Error sending fallback reply:", err2);
@@ -111,3 +91,6 @@ client.on("interactionCreate", async (interaction) => {
     }
   }
 });
+
+// --- login ---
+client.login(DISCORD_TOKEN);
