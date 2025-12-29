@@ -33,6 +33,22 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
 // --- Discord client ---
 const client = new Client({
+  client.on("error", (err) => {
+  console.error("CLIENT ERROR:", err);
+});
+
+client.on("shardError", (err) => {
+  console.error("SHARD ERROR:", err);
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("UNHANDLED REJECTION:", reason);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("UNCAUGHT EXCEPTION:", err);
+});
+
   intents: [GatewayIntentBits.Guilds],
 });
 
