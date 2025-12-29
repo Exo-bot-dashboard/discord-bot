@@ -33,7 +33,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
 // --- Discord client ---
 const client = new Client({
-  client.on("error", (err) => {
+  client.on("error", function(err) {
   console.error("CLIENT ERROR:", err);
 });
 
