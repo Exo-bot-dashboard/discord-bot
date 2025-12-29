@@ -66,10 +66,12 @@ client.once("ready", async () => {
 
 // --- interaction handler ---
 client.on("interactionCreate", async (interaction) => {
-  // don't filter anything for now – handle all interactions
-  console.log("Interaction received:", interaction.type, interaction.commandName);
+  console.log("RAW INTERACTION:", {
+    type: interaction.type,
+    id: interaction.id,
+    commandName: interaction.commandName,
+  });
 
-  // if it's not a chat input command, ignore
   if (!interaction.isChatInputCommand()) return;
 
   if (interaction.commandName === "ping") {
