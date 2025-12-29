@@ -37,7 +37,8 @@ const client = new Client({
     console.error("Client error:", err);
 });
 
-client.on("shardError", (err) => {
+client.on("error", function (err) {
+
   console.error("SHARD ERROR:", err);
 });
 
