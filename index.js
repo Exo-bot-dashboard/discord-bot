@@ -33,9 +33,13 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
 // --- Discord client ---
 const client = new Client({
+    intents: [] // or whatever you use
+});
+
 client.addListener("error", function (err) {
     console.error("Client error:", err);
 });
+
 
 
 process.on("unhandledRejection", (reason) => {
