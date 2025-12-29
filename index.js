@@ -92,14 +92,22 @@ client.login(DISCORD_TOKEN);
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
-  try {
-    if (interaction.commandName === "ping") {
-      await interaction.reply("Pong! ✅ Bot received your command and is responding on time.");
-    }
-  } catch (error) {
-    console.error("Error handling interaction:", error);
-    if (!interaction.replied && !interaction.deferred) {
-      await interaction.reply({ content: "There was an error handling this command.", ephemeral: true });
+  console.log("Received interaction:", interaction.commandName);
+
+  if (interaction.commandName === "ping") {
+    try {
+      // reply immediately – no Supabase, no extra logic
+      await interaction.reply("Pong! ✅ Bot is alive and responding.");
+      console.log("Replied to /ping");
+    } catch (error) {
+      console.error("Error replying to /ping:", error);
+      try {
+        if (!interaction.replied && !interaction.deferred) {
+          await interaction.reply({ content: "There was an error handling this command.", ephemeral: true });
+        }
+      } catch (err2) {
+        console.error("Error sending fallback reply:", err2);
+      }
     }
   }
 });
