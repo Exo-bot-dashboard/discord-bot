@@ -108,3 +108,20 @@ client.once("ready", async () => {
 
 // --- login ---
 client.login(DISCORD_TOKEN);
+client.on("interactionCreate", async (interaction) => {
+  console.log(
+    "Interaction received:",
+    interaction.type,
+    interaction.isChatInputCommand() ? interaction.commandName : "non-chat-input"
+  );
+
+  try {
+    if (!interaction.isChatInputCommand()) return;
+
+    if (interaction.commandName === "ping") {
+      await interaction.reply("Pong! ✅");
+    }
+  } catch (err) {
+    console.error("Error handling interaction:", err);
+  }
+});
