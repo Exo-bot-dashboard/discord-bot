@@ -13,10 +13,13 @@ const {
   DISCORD_APP_ID,
   SUPABASE_URL,
   SUPABASE_SERVICE_ROLE_KEY,
+  PORT,
 } = process.env;
 
 if (!DISCORD_TOKEN || !DISCORD_APP_ID || !SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-  console.error("Missing env vars. Set DISCORD_TOKEN, DISCORD_APP_ID, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY");
+  console.error(
+    "Missing env vars. Set DISCORD_TOKEN, DISCORD_APP_ID, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY"
+  );
   process.exit(1);
 }
 
@@ -25,22 +28,22 @@ const app = express();
 app.get("/", (_req, res) => {
   res.status(200).send("OK - bot is running");
 });
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Web server alive on port ${PORT}`));
+const SERVER_PORT = PORT || 3000;
+app.listen(SERVER_PORT, () =>
+  console.log(`Web server alive on port ${SERVER_PORT}`)
+);
 
-// --- Supabase client (not used yet, but fine to keep) ---
+// --- Supabase client (you can use this later) ---
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
 // --- Discord client ---
 const client = new Client({
-    intents: [] // or whatever you use
+  intents: [GatewayIntentBits.Guilds], // add more intents later if needed
 });
 
-client.addListener("error", function (err) {
-    console.error("Client error:", err);
+client.on("error", (err) => {
+  console.error("Client error:", err);
 });
-
-
 
 process.on("unhandledRejection", (reason) => {
   console.error("UNHANDLED REJECTION:", reason);
@@ -48,9 +51,6 @@ process.on("unhandledRejection", (reason) => {
 
 process.on("uncaughtException", (err) => {
   console.error("UNCAUGHT EXCEPTION:", err);
-});
-
-  intents: [GatewayIntentBits.Guilds],
 });
 
 // --- define commands (only /ping for now) ---
@@ -75,40 +75,35 @@ async function registerCommands() {
   }
 }
 
-// --- ready event ---
+// --- handle interactions ---
+client.on("interactionCreate", async (interaction) => {
+  try {
+    if (!interaction.isChatInputCommand()) return;
+
+    if (interaction.commandName === "ping") {
+      await interaction.reply("Pong! ✅");
+    }
+  } catch (err) {
+    console.error("Error handling interaction:", err);
+    if (interaction.deferred || interaction.replied) {
+      try {
+        await interaction.editReply("There was an error while executing this command.");
+      } catch (_) {}
+    } else {
+      try {
+        await interaction.reply({
+          content: "There was an error while executing this command.",
+          ephemeral: true,
+        });
+      } catch (_) {}
+    }
+  }
+});
+
+// --- when bot is ready ---
 client.once("ready", async () => {
   console.log(`Logged in as ${client.user.tag}`);
   await registerCommands();
-});
-
-// --- interaction handler ---
-client.on("interactionCreate", async (interaction) => {
-  console.log("RAW INTERACTION:", {
-    type: interaction.type,
-    id: interaction.id,
-    commandName: interaction.commandName,
-  });
-
-  if (!interaction.isChatInputCommand()) return;
-
-  if (interaction.commandName === "ping") {
-    try {
-      await interaction.reply("Pong! ✅ Bot is alive and responding.");
-      console.log("Replied to /ping");
-    } catch (error) {
-      console.error("Error replying to /ping:", error);
-      try {
-        if (!interaction.replied && !interaction.deferred) {
-          await interaction.reply({
-            content: "There was an error handling this command.",
-            ephemeral: true,
-          });
-        }
-      } catch (err2) {
-        console.error("Error sending fallback reply:", err2);
-      }
-    }
-  }
 });
 
 // --- login ---
