@@ -1,10 +1,9 @@
-require('dotenv').config();
-const { Client, GatewayIntentBits, Collection, REST, Routes } = require('discord.js');
-const { createClient } = require('@supabase/supabase-js');
-const OpenAI = require('openai');
-const express = require('express');
+const { Client, GatewayIntentBits } = require('discord.js');
+const { supabase } = require('./utils/supabase');
+const { registerCommandsForGuild, handleCommand } = require('./commands');
+const { setupEventListeners } = require('./events');
+const cron = require('node-cron');
 
-// Initialize clients
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -13,350 +12,263 @@ const client = new Client({
     GatewayIntentBits.DirectMessages,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildVoiceStates,
-    GatewayIntentBits.GuildMessageReactions,
+    GatewayIntentBits.GuildModeration,
   ],
 });
 
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-// In-memory cache
-const cache = {
+// Initialize global cache
+global.botCache = {
   modules: {},
-  settings: {},
+  userCurrency: {},
+  channelTopics: {},
   warnings: {},
-  rarities: {},
-  shopItems: {},
+  spamTracking: {},
+  enabledEvents: {},
 };
 
-// Express server for health check
-const app = express();
-app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'ok', timestamp: new Date() });
-});
-app.listen(process.env.PORT || 3000, () => {
-  console.log(`Health check server running on port ${process.env.PORT || 3000}`);
-});
-
 // ============================================
-// BOT READY EVENT
+// BOT READY EVENT - INSTANT RESPONSE
 // ============================================
-client.once('ready', async () => {
+client.once('ready', () => {
   console.log(`✅ Bot logged in as ${client.user.tag}`);
   client.user.setActivity('Exo Dashboard', { type: 'PLAYING' });
+  console.log('✅ Bot is ready!');
 
-  // Load modules and settings from Supabase
-  await loadModulesFromSupabase();
-  await registerCommands();
+  // Load everything in background (DETACHED - NOT AWAITED)
+  loadBotDataInBackground();
+});
+
+// ============================================
+// BACKGROUND INITIALIZATION (NON-BLOCKING)
+// ============================================
+async function loadBotDataInBackground() {
+  try {
+    console.log('📡 Starting background initialization...');
+
+    // Load all guilds
+    for (const guild of client.guilds.cache.values()) {
+      try {
+        // Register commands (fire and forget)
+        registerCommandsForGuild(guild).catch(err => 
+          console.error(`❌ Command registration error for ${guild.name}:`, err.message)
+        );
+      } catch (error) {
+        console.error(`❌ Error processing guild ${guild.name}:`, error.message);
+      }
+    }
+
+    // Setup event listeners
+    setupEventListeners(client);
+
+    // Subscribe to real-time updates
+    subscribeToModuleChanges();
+    subscribeToChannelTopicChanges();
+    subscribeToCustomCommandChanges();
+    subscribeToWorkflowChanges();
+
+    // Start scheduled tasks
+    startScheduledTasks();
+
+    console.log('✅ Background initialization complete');
+  } catch (error) {
+    console.error('❌ Background initialization error:', error);
+  }
+}
+
+// ============================================
+// GUILD CREATE EVENT
+// ============================================
+client.on('guildCreate', async (guild) => {
+  console.log(`📍 Joined guild: ${guild.name}`);
   
-  // Subscribe to real-time updates
-  subscribeToModuleChanges();
-  subscribeToSettingsChanges();
+  // Register commands in background (fire and forget)
+  registerCommandsForGuild(guild).catch(err => 
+    console.error(`❌ Command registration error for ${guild.name}:`, err.message)
+  );
 });
 
 // ============================================
-// LOAD MODULES FROM SUPABASE
-// ============================================
-async function loadModulesFromSupabase() {
-  try {
-    const { data: modules, error } = await supabase
-      .from('modules')
-      .select('*');
-
-    if (error) throw error;
-
-    modules.forEach(mod => {
-      cache.modules[mod.id] = mod.enabled;
-    });
-
-    console.log('✅ Modules loaded from Supabase');
-  } catch (error) {
-    console.error('❌ Error loading modules:', error);
-  }
-}
-
-// ============================================
-// REGISTER DISCORD COMMANDS
-// ============================================
-async function registerCommands() {
-  try {
-    const commands = [];
-
-    // Plugin Module Commands
-    if (cache.modules.plugin) {
-      commands.push({
-        name: 'poll',
-        description: 'Create a poll',
-        options: [
-          { name: 'question', description: 'Poll question', type: 3, required: true },
-          { name: 'option1', description: 'Option 1', type: 3, required: true },
-          { name: 'option2', description: 'Option 2', type: 3, required: true },
-        ],
-      });
-      commands.push({
-        name: 'apply',
-        description: 'Submit an application',
-      });
-    }
-
-    // Helix Module Commands
-    if (cache.modules.helix) {
-      commands.push({
-        name: 'backup',
-        description: 'Create a server backup',
-      });
-      commands.push({
-        name: 'report',
-        description: 'Submit a report',
-        options: [
-          { name: 'reason', description: 'Report reason', type: 3, required: true },
-        ],
-      });
-      commands.push({
-        name: 'signal',
-        description: 'Send a signal/announcement',
-        options: [
-          { name: 'message', description: 'Signal message', type: 3, required: true },
-        ],
-      });
-    }
-
-    // Economy Module Commands
-    if (cache.modules.economy) {
-      commands.push({
-        name: 'balance',
-        description: 'Check your balance',
-      });
-      commands.push({
-        name: 'buy',
-        description: 'Buy an item from the shop',
-        options: [
-          { name: 'item_id', description: 'Item ID', type: 3, required: true },
-        ],
-      });
-      commands.push({
-        name: 'rarityinfo',
-        description: 'Get rarity information',
-        options: [
-          { name: 'rarity_id', description: 'Rarity ID', type: 3, required: true },
-        ],
-      });
-    }
-
-    const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-
-    await rest.put(Routes.applicationCommands(process.env.DISCORD_CLIENT_ID), {
-      body: commands,
-    });
-
-    console.log(`✅ Registered ${commands.length} commands`);
-  } catch (error) {
-    console.error('❌ Error registering commands:', error);
-  }
-}
-
-// ============================================
-// SUBSCRIBE TO MODULE CHANGES (REAL-TIME)
-// ============================================
-function subscribeToModuleChanges() {
-  supabase
-    .channel('modules-changes')
-    .on(
-      'postgres_changes',
-      { event: '*', schema: 'public', table: 'modules' },
-      async (payload) => {
-        console.log('📡 Module change detected:', payload);
-        cache.modules[payload.new.id] = payload.new.enabled;
-        await registerCommands(); // Re-register commands
-      }
-    )
-    .subscribe();
-}
-
-// ============================================
-// SUBSCRIBE TO SETTINGS CHANGES (REAL-TIME)
-// ============================================
-function subscribeToSettingsChanges() {
-  supabase
-    .channel('settings-changes')
-    .on(
-      'postgres_changes',
-      { event: '*', schema: 'public', table: 'module_settings' },
-      (payload) => {
-        console.log('📡 Settings change detected:', payload);
-        cache.settings[payload.new.module_id] = payload.new;
-      }
-    )
-    .subscribe();
-}
-
-// ============================================
-// MESSAGE CREATE EVENT (INSPECT MODULE)
-// ============================================
-client.on('messageCreate', async (message) => {
-  if (message.author.bot) return;
-
-  try {
-    // Check if Inspect module is enabled
-    if (!cache.modules.helix) return;
-
-    // Get channel topic from Supabase
-    const { data: channelConfig } = await supabase
-      .from('inspect_channels')
-      .select('topic')
-      .eq('channel_id', message.channelId)
-      .single();
-
-    if (!channelConfig) return; // Channel not monitored
-
-    // Use OpenAI to detect off-topic
-    const isOnTopic = await checkIfOnTopic(message.content, channelConfig.topic);
-
-    if (!isOnTopic) {
-      // Increment warning count
-      const warningKey = `${message.authorId}-${message.channelId}`;
-      cache.warnings[warningKey] = (cache.warnings[warningKey] || 0) + 1;
-
-      // Save warning to Supabase
-      await supabase.from('warnings').insert({
-        user_id: message.authorId,
-        channel_id: message.channelId,
-        message_content: message.content,
-        created_at: new Date(),
-      });
-
-      // Warn user
-      const warningCount = cache.warnings[warningKey];
-      await message.reply(`⚠️ Off-topic message! (Warning ${warningCount}/3)`);
-
-      // Mute after 3 warnings
-      if (warningCount >= 3) {
-        await message.member.timeout(60000, 'Off-topic warnings exceeded');
-        await message.reply(`🔇 You have been muted for 1 minute.`);
-      }
-    }
-  } catch (error) {
-    console.error('❌ Error in messageCreate:', error);
-  }
-});
-
-// ============================================
-// CHECK IF MESSAGE IS ON-TOPIC (OPENAI)
-// ============================================
-async function checkIfOnTopic(messageContent, topic) {
-  try {
-    const response = await openai.chat.completions.create({
-      model: 'gpt-3.5-turbo',
-      messages: [
-        {
-          role: 'system',
-          content: `You are a content moderator. Determine if a message is about the specified topic. Answer only "yes" or "no".`,
-        },
-        {
-          role: 'user',
-          content: `Topic: "${topic}"\n\nMessage: "${messageContent}"\n\nIs this message about the topic?`,
-        },
-      ],
-      max_tokens: 10,
-    });
-
-    const answer = response.choices[0].message.content.toLowerCase().trim();
-    return answer.includes('yes');
-  } catch (error) {
-    console.error('❌ Error checking topic with OpenAI:', error);
-    return true; // Default to on-topic if API fails
-  }
-}
-
-// ============================================
-// INTERACTION CREATE EVENT (SLASH COMMANDS)
+// INTERACTION CREATE EVENT - INSTANT RESPONSE
 // ============================================
 client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isCommand()) return;
-
-  try {
-    const { commandName } = interaction;
-
-    // Plugin Module Commands
-    if (commandName === 'poll') {
-      const question = interaction.options.getString('question');
-      const option1 = interaction.options.getString('option1');
-      const option2 = interaction.options.getString('option2');
-
-      await interaction.reply(`📊 **${question}**\n1️⃣ ${option1}\n2️⃣ ${option2}`);
-
-      // Save poll to Supabase
-      await supabase.from('polls').insert({
-        guild_id: interaction.guildId,
-        question,
-        option1,
-        option2,
-        created_at: new Date(),
-      });
-    }
-
-    if (commandName === 'apply') {
-      await interaction.reply('📝 Application form submitted!');
-      // Handle application logic
-    }
-
-    // Helix Module Commands
-    if (commandName === 'backup') {
-      await interaction.reply('💾 Creating server backup...');
-      // Handle backup logic
-    }
-
-    if (commandName === 'report') {
-      const reason = interaction.options.getString('reason');
-      await interaction.reply(`📋 Report submitted: ${reason}`);
-      // Save report to Supabase
-    }
-
-    if (commandName === 'signal') {
-      const message = interaction.options.getString('message');
-      await interaction.reply(`📢 Signal sent: ${message}`);
-      // Broadcast signal
-    }
-
-    // Economy Module Commands
-    if (commandName === 'balance') {
-      const { data: user } = await supabase
-        .from('users')
-        .select('balance')
-        .eq('user_id', interaction.user.id)
-        .single();
-
-      const balance = user?.balance || 0;
-      await interaction.reply(`💰 Your balance: ${balance}`);
-    }
-
-    if (commandName === 'buy') {
-      const itemId = interaction.options.getString('item_id');
-      await interaction.reply(`🛍️ Purchasing item ${itemId}...`);
-      // Handle purchase logic
-    }
-
-    if (commandName === 'rarityinfo') {
-      const rarityId = interaction.options.getString('rarity_id');
-      const { data: rarity } = await supabase
-        .from('rarities')
-        .select('*')
-        .eq('id', rarityId)
-        .single();
-
-      if (rarity) {
-        await interaction.reply(`⭐ **${rarity.name}** - Weight: ${rarity.weight}`);
-      } else {
-        await interaction.reply('❌ Rarity not found');
-      }
-    }
-  } catch (error) {
-    console.error('❌ Error in interactionCreate:', error);
-    await interaction.reply('❌ An error occurred');
+  if (interaction.isCommand()) {
+    await handleCommand(interaction);
   }
 });
 
 // ============================================
-// LOGIN TO DISCORD
+// SETUP EVENT LISTENERS
+// ============================================
+setupEventListeners(client);
+
+// ============================================
+// REAL-TIME SUBSCRIPTIONS (NON-BLOCKING)
+// ============================================
+function subscribeToModuleChanges() {
+  try {
+    supabase
+      .channel('modules-changes')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'guild_features' },
+        (payload) => {
+          console.log('📡 Module change detected:', payload.new.guild_id);
+          const guild = client.guilds.cache.get(payload.new.guild_id);
+          if (guild) {
+            // Fire and forget
+            registerCommandsForGuild(guild).catch(err => 
+              console.error('Command registration error:', err.message)
+            );
+          }
+        }
+      )
+      .subscribe();
+  } catch (error) {
+    console.error('❌ Module subscription error:', error);
+  }
+}
+
+function subscribeToChannelTopicChanges() {
+  try {
+    supabase
+      .channel('channel-topics-changes')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'channel_topics' },
+        (payload) => {
+          console.log('📡 Channel topic change detected:', payload.new.channel_id);
+          global.botCache.channelTopics[payload.new.channel_id] = payload.new.topic;
+        }
+      )
+      .subscribe();
+  } catch (error) {
+    console.error('❌ Channel topic subscription error:', error);
+  }
+}
+
+function subscribeToCustomCommandChanges() {
+  try {
+    supabase
+      .channel('custom-commands-changes')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'custom_commands' },
+        (payload) => {
+          console.log('📡 Custom command change detected:', payload.new.name);
+          const guild = client.guilds.cache.get(payload.new.guild_id);
+          if (guild) {
+            registerCommandsForGuild(guild).catch(err => 
+              console.error('Command registration error:', err.message)
+            );
+          }
+        }
+      )
+      .subscribe();
+  } catch (error) {
+    console.error('❌ Custom command subscription error:', error);
+  }
+}
+
+function subscribeToWorkflowChanges() {
+  try {
+    supabase
+      .channel('workflows-changes')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'workflows' },
+        (payload) => {
+          console.log('📡 Workflow change detected:', payload.new.id);
+          const guild = client.guilds.cache.get(payload.new.guild_id);
+          if (guild) {
+            registerCommandsForGuild(guild).catch(err => 
+              console.error('Command registration error:', err.message)
+            );
+          }
+        }
+      )
+      .subscribe();
+  } catch (error) {
+    console.error('❌ Workflow subscription error:', error);
+  }
+}
+
+// ============================================
+// SCHEDULED TASKS (NON-BLOCKING)
+// ============================================
+function startScheduledTasks() {
+  try {
+    // Birthday reminder - runs daily at midnight
+    cron.schedule('0 0 * * *', async () => {
+      console.log('🎂 Checking for birthdays...');
+      
+      try {
+        const today = new Date().toISOString().split('T')[0];
+        const { data: birthdays } = await supabase
+          .from('birthdays')
+          .select('*')
+          .like('birthday', `%${today.slice(5)}`);
+
+        if (birthdays && birthdays.length > 0) {
+          for (const birthday of birthdays) {
+            try {
+              const guild = client.guilds.cache.get(birthday.guild_id);
+              if (guild) {
+                const user = await client.users.fetch(birthday.user_id);
+                const channel = guild.channels.cache.find(ch => ch.name === 'announcements');
+                if (channel) {
+                  await channel.send(`🎂 Happy Birthday ${user.username}! 🎉`);
+                }
+              }
+            } catch (error) {
+              console.error('❌ Birthday announcement error:', error.message);
+            }
+          }
+        }
+      } catch (error) {
+        console.error('❌ Birthday check error:', error.message);
+      }
+    });
+
+    // Cleanup old logs - runs daily at 2 AM
+    cron.schedule('0 2 * * *', async () => {
+      console.log('🧹 Cleaning up old logs...');
+      
+      try {
+        const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+        await supabase
+          .from('audit_log_entries')
+          .delete()
+          .lt('created_at', thirtyDaysAgo);
+        
+        console.log('✅ Old logs cleaned up');
+      } catch (error) {
+        console.error('❌ Log cleanup error:', error.message);
+      }
+    });
+
+    console.log('✅ Scheduled tasks started');
+  } catch (error) {
+    console.error('❌ Scheduled tasks error:', error);
+  }
+}
+
+// ============================================
+// ERROR HANDLING
+// ============================================
+client.on('error', error => {
+  console.error('❌ Discord client error:', error);
+});
+
+process.on('unhandledRejection', error => {
+  console.error('❌ Unhandled rejection:', error);
+});
+
+process.on('uncaughtException', error => {
+  console.error('❌ Uncaught exception:', error);
+});
+
+// ============================================
+// LOGIN - FIRST AND ONLY BLOCKING OPERATION
 // ============================================
 client.login(process.env.DISCORD_TOKEN);
+    
