@@ -230,128 +230,117 @@ function setupEventListeners(client) {
   // ============================================
   // MESSAGE DELETE (Logging)
   // ============================================
-  client.on('messageDelete', async (message) => {
-    if (message.author?.bot) return;
+  client.on('messageCreate', async (message) => {
+  if (message.author.bot) return;
 
-    try {
-      const guildModules = global.botCache.modules[message.guildId] || {};
+  try {
+    const guildModules = global.botCache.modules[message.guildId] || {};
 
-      if (guildModules.security) {
-        supabase.from('audit_log_entries').insert({
-          guild_id: message.guildId,
-          user_id: message.author?.id,
-          action_type: 'message_delete',
-          target_id: message.id,
-          details: {
-            content: message.content,
-            channel_id: message.channelId,
-            author: message.author?.username,
-          },
-          created_at: new Date(),
-        }).catch(err => console.error('❌ Delete audit error:', err));
-      }
-    } catch (error) {
-      console.error('❌ Error in messageDelete:', error);
-    }
-  });
+    // HELIX: Inspect module - off-topic detection (FIRE AND FORGET)
+    if (guildModules.helix) {
+      const topic = global.botCache.channelTopics[message.channelId];
+      if (topic) {
+        // Don't await - process in background
+        checkIfOnTopic(message.content, topic)
+          .then(async (isOnTopic) => {
+            if (!isOnTopic) {
+              const warningKey = `${message.authorId}-${message.channelId}`;
+              global.botCache.warnings[warningKey] = (global.botCache.warnings[warningKey] || 0) + 1;
 
-  // ============================================
-  // MESSAGE UPDATE (Logging)
-  // ============================================
-  client.on('messageUpdate', async (oldMessage, newMessage) => {
-    if (newMessage.author?.bot) return;
+              // Fire and forget
+              supabase.from('warnings').insert({
+                user_id: message.authorId,
+                channel_id: message.channelId,
+                message_content: message.content,
+                warning_type: 'off-topic',
+                created_at: new Date(),
+              }).catch(err => console.error('❌ Warning error:', err.message));
 
-    try {
-      const guildModules = global.botCache.modules[newMessage.guildId] || {};
+              const warningCount = global.botCache.warnings[warningKey];
+              await message.reply(`⚠️ Off-topic message! (Warning ${warningCount}/3)`);
 
-      if (guildModules.security) {
-        supabase.from('audit_log_entries').insert({
-          guild_id: newMessage.guildId,
-          user_id: newMessage.author?.id,
-          action_type: 'message_update',
-          target_id: newMessage.id,
-          details: {
-            old_content: oldMessage.content,
-            new_content: newMessage.content,
-            channel_id: newMessage.channelId,
-          },
-          created_at: new Date(),
-        }).catch(err => console.error('❌ Update audit error:', err));
-      }
-    } catch (error) {
-      console.error('❌ Error in messageUpdate:', error);
-    }
-  });
-
-  // ============================================
-  // MESSAGE REACTION ADD (Starboard, Polls, Verification)
-  // ============================================
-  client.on('messageReactionAdd', async (reaction, user) => {
-    if (user.bot) return;
-
-    try {
-      const guildModules = global.botCache.modules[reaction.message.guildId] || {};
-
-      // PLUGIN: Starboard
-      if (guildModules.plugin) {
-        const { data: starboard } = await supabase
-          .from('starboard_settings')
-          .select('*')
-          .eq('guild_id', reaction.message.guildId)
-          .single();
-
-        if (starboard && reaction.emoji.name === '⭐') {
-          if (reaction.count >= starboard.threshold) {
-            const starboardChannel = reaction.message.guild.channels.cache.get(starboard.channel_id);
-            if (starboardChannel) {
-              starboardChannel.send(
-                `⭐ **${reaction.message.author.username}**: ${reaction.message.content}\n[Jump to message](${reaction.message.url})`
-              ).catch(err => console.error('❌ Starboard send error:', err));
+              if (warningCount >= 3) {
+                await message.member.timeout(60000, 'Off-topic warnings exceeded');
+              }
             }
-          }
-        }
+          })
+          .catch(err => console.error('❌ Inspect error:', err.message));
       }
-
-      // PLUGIN: Polls
-      if (guildModules.plugin) {
-        const { data: poll } = await supabase
-          .from('polls')
-          .select('*')
-          .eq('message_id', reaction.message.id)
-          .single();
-
-        if (poll) {
-          const option = reaction.emoji.name === '1️⃣' ? 'option1' : reaction.emoji.name === '2️⃣' ? 'option2' : null;
-          if (option) {
-            supabase.from('poll_votes').insert({
-              poll_id: poll.id,
-              user_id: user.id,
-              option,
-            }).catch(err => console.error('❌ Poll vote error:', err));
-          }
-        }
-      }
-
-      // SECURITY: Verification
-      if (guildModules.security && reaction.emoji.name === '✅') {
-        const { data: verifySettings } = await supabase
-          .from('verification_settings')
-          .select('verified_role_id')
-          .eq('guild_id', reaction.message.guildId)
-          .single();
-
-        if (verifySettings) {
-          const member = await reaction.message.guild.members.fetch(user.id);
-          const role = reaction.message.guild.roles.cache.get(verifySettings.verified_role_id);
-          if (role) {
-            await member.roles.add(role);
-          }
-        }
-      }
-    } catch (error) {
-      console.error('❌ Error in messageReactionAdd:', error);
     }
-  });
+
+    // MODERATION: Auto-Mod (FAST - no await)
+    if (guildModules.moderation) {
+      // Spam detection
+      const spamKey = `${message.authorId}-${message.guildId}`;
+      const now = Date.now();
+      if (!global.botCache.spamTracking[spamKey]) {
+        global.botCache.spamTracking[spamKey] = [];
+      }
+
+      global.botCache.spamTracking[spamKey].push(now);
+      global.botCache.spamTracking[spamKey] = global.botCache.spamTracking[spamKey].filter(
+        t => now - t < 60000
+      );
+
+      if (global.botCache.spamTracking[spamKey].length > 5) {
+        await message.delete();
+        await message.author.send('⚠️ You are sending messages too fast!');
+        return;
+      }
+
+      // Profanity filter
+      const PROFANITY_LIST = ['badword1', 'badword2', 'badword3'];
+      const hasProfanity = PROFANITY_LIST.some(word => message.content.toLowerCase().includes(word));
+      if (hasProfanity) {
+        await message.delete();
+        await message.reply('⚠️ Your message contains inappropriate language!');
+
+        // Fire and forget
+        supabase.from('warnings').insert({
+          user_id: message.authorId,
+          guild_id: message.guildId,
+          warning_type: 'profanity',
+          created_at: new Date(),
+        }).catch(err => console.error('❌ Profanity error:', err.message));
+        return;
+      }
+    }
+
+    // ECONOMY: Award currency (FIRE AND FORGET)
+    if (guildModules.economy) {
+      const currencyKey = `${message.authorId}-currency-cooldown`;
+      const lastAward = global.botCache.userCurrency[currencyKey] || 0;
+
+      if (Date.now() - lastAward > 60000) {
+        // Fire and forget
+        supabase.from('user_currency').upsert({
+          user_id: message.authorId,
+          guild_id: message.guildId,
+          balance: (global.botCache.userCurrency[message.authorId] || 0) + 1,
+        }).catch(err => console.error('❌ Currency error:', err.message));
+
+        global.botCache.userCurrency[currencyKey] = Date.now();
+      }
+    }
+
+    // SECURITY: Log messages (FIRE AND FORGET)
+    if (guildModules.security) {
+      supabase.from('audit_log_entries').insert({
+        guild_id: message.guildId,
+        user_id: message.authorId,
+        action_type: 'message_create',
+        target_id: message.id,
+        details: {
+          content: message.content,
+          channel_id: message.channelId,
+        },
+        created_at: new Date(),
+      }).catch(err => console.error('❌ Audit error:', err.message));
+    }
+  } catch (error) {
+    console.error('❌ Error in messageCreate:', error.message);
+  }
+});
 
   // ============================================
   // MESSAGE REACTION REMOVE (Starboard, Polls)
