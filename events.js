@@ -2,7 +2,7 @@ const { supabase } = require('./utils/supabase');
 const { checkIfOnTopic } = require('./utils/openai');
 const { handleCommand } = require('./commands');
 
-const PROFANITY_LIST = ['badword1', 'badword2', 'badword3']; // Add your profanity list
+const PROFANITY_LIST = ['badword1', 'badword2', 'badword3', 'spam', 'abuse'];
 
 function setupEventListeners(client) {
   // ============================================
@@ -18,7 +18,6 @@ function setupEventListeners(client) {
       try {
         const buttonId = interaction.customId;
 
-        // Verification button
         if (buttonId === 'verify-button') {
           const { data: verifySettings } = await supabase
             .from('verification_settings')
@@ -35,7 +34,6 @@ function setupEventListeners(client) {
           }
         }
 
-        // Ticket create button
         if (buttonId === 'create-ticket') {
           const ticketChannel = await interaction.guild.channels.create({
             name: `ticket-${interaction.user.username}`,
@@ -52,14 +50,14 @@ function setupEventListeners(client) {
             ],
           });
 
-          await supabase.from('tickets').insert({
+          await interaction.reply({ content: `✅ Ticket created: ${ticketChannel}`, ephemeral: true });
+
+          supabase.from('tickets').insert({
             guild_id: interaction.guildId,
             user_id: interaction.user.id,
             channel_id: ticketChannel.id,
             created_at: new Date(),
-          });
-
-          await interaction.reply({ content: `✅ Ticket created: ${ticketChannel}`, ephemeral: true });
+          }).catch(err => console.error('❌ Ticket error:', err));
         }
       } catch (error) {
         console.error('❌ Error handling button:', error);
@@ -71,7 +69,6 @@ function setupEventListeners(client) {
       try {
         const selectId = interaction.customId;
 
-        // Game selection
         if (selectId === 'game-select') {
           const game = interaction.values[0];
           await interaction.reply(`🎮 Starting ${game}...`);
@@ -86,18 +83,17 @@ function setupEventListeners(client) {
       try {
         const modalId = interaction.customId;
 
-        // Application form
         if (modalId === 'application-form') {
           const answers = interaction.fields.getTextInputValue('answers');
 
-          await supabase.from('applications').insert({
+          await interaction.reply('✅ Application submitted!');
+
+          supabase.from('applications').insert({
             guild_id: interaction.guildId,
             user_id: interaction.user.id,
             answers,
             created_at: new Date(),
-          });
-
-          await interaction.reply('✅ Application submitted!');
+          }).catch(err => console.error('❌ Application error:', err));
         }
       } catch (error) {
         console.error('❌ Error handling modal:', error);
@@ -114,35 +110,37 @@ function setupEventListeners(client) {
     try {
       const guildModules = global.botCache.modules[message.guildId] || {};
 
-      // HELIX: Inspect module - off-topic detection
+      // HELIX: Inspect module - off-topic detection (NON-BLOCKING)
       if (guildModules.helix) {
         const topic = global.botCache.channelTopics[message.channelId];
         if (topic) {
-          checkIfOnTopic(message.content, topic).then(async (isOnTopic) => {
-            if (!isOnTopic) {
-              const warningKey = `${message.authorId}-${message.channelId}`;
-              global.botCache.warnings[warningKey] = (global.botCache.warnings[warningKey] || 0) + 1;
+          checkIfOnTopic(message.content, topic)
+            .then(async (isOnTopic) => {
+              if (!isOnTopic) {
+                const warningKey = `${message.authorId}-${message.channelId}`;
+                global.botCache.warnings[warningKey] = (global.botCache.warnings[warningKey] || 0) + 1;
 
-              await supabase.from('warnings').insert({
-                user_id: message.authorId,
-                channel_id: message.channelId,
-                message_content: message.content,
-                warning_type: 'off-topic',
-                created_at: new Date(),
-              });
+                supabase.from('warnings').insert({
+                  user_id: message.authorId,
+                  channel_id: message.channelId,
+                  message_content: message.content,
+                  warning_type: 'off-topic',
+                  created_at: new Date(),
+                }).catch(err => console.error('❌ Warning error:', err));
 
-              const warningCount = global.botCache.warnings[warningKey];
-              await message.reply(`⚠️ Off-topic message! (Warning ${warningCount}/3)`);
+                const warningCount = global.botCache.warnings[warningKey];
+                await message.reply(`⚠️ Off-topic message! (Warning ${warningCount}/3)`);
 
-              if (warningCount >= 3) {
-                await message.member.timeout(60000, 'Off-topic warnings exceeded');
+                if (warningCount >= 3) {
+                  await message.member.timeout(60000, 'Off-topic warnings exceeded');
+                }
               }
-            }
-          });
+            })
+            .catch(err => console.error('❌ Inspect error:', err));
         }
       }
 
-      // MODERATION: Auto-Mod
+      // MODERATION: Auto-Mod (FAST - no await)
       if (guildModules.moderation) {
         // Spam detection
         const spamKey = `${message.authorId}-${message.guildId}`;
@@ -153,7 +151,7 @@ function setupEventListeners(client) {
 
         global.botCache.spamTracking[spamKey].push(now);
         global.botCache.spamTracking[spamKey] = global.botCache.spamTracking[spamKey].filter(
-          t => now - t < 60000 // Keep only messages from last minute
+          t => now - t < 60000
         );
 
         if (global.botCache.spamTracking[spamKey].length > 5) {
@@ -168,16 +166,16 @@ function setupEventListeners(client) {
           await message.delete();
           await message.reply('⚠️ Your message contains inappropriate language!');
 
-          await supabase.from('warnings').insert({
+          supabase.from('warnings').insert({
             user_id: message.authorId,
             guild_id: message.guildId,
             warning_type: 'profanity',
             created_at: new Date(),
-          });
+          }).catch(err => console.error('❌ Profanity error:', err));
           return;
         }
 
-        // Caps lock abuse (>70% caps)
+        // Caps lock abuse
         const capsCount = (message.content.match(/[A-Z]/g) || []).length;
         const capsPercentage = (capsCount / message.content.length) * 100;
         if (capsPercentage > 70 && message.content.length > 10) {
@@ -186,7 +184,7 @@ function setupEventListeners(client) {
           return;
         }
 
-        // Mention spam (>5 mentions)
+        // Mention spam
         if (message.mentions.size > 5) {
           await message.delete();
           await message.reply('⚠️ Please avoid mention spam!');
@@ -194,25 +192,25 @@ function setupEventListeners(client) {
         }
       }
 
-      // ECONOMY: Award currency for messages
+      // ECONOMY: Award currency (NON-BLOCKING)
       if (guildModules.economy) {
         const currencyKey = `${message.authorId}-currency-cooldown`;
         const lastAward = global.botCache.userCurrency[currencyKey] || 0;
 
-        if (Date.now() - lastAward > 60000) { // 1 minute cooldown
-          await supabase.from('user_currency').upsert({
+        if (Date.now() - lastAward > 60000) {
+          supabase.from('user_currency').upsert({
             user_id: message.authorId,
             guild_id: message.guildId,
             balance: (global.botCache.userCurrency[message.authorId] || 0) + 1,
-          });
+          }).catch(err => console.error('❌ Currency error:', err));
 
           global.botCache.userCurrency[currencyKey] = Date.now();
         }
       }
 
-      // SECURITY: Log messages
+      // SECURITY: Log messages (NON-BLOCKING)
       if (guildModules.security) {
-        await supabase.from('audit_log_entries').insert({
+        supabase.from('audit_log_entries').insert({
           guild_id: message.guildId,
           user_id: message.authorId,
           action_type: 'message_create',
@@ -222,7 +220,7 @@ function setupEventListeners(client) {
             channel_id: message.channelId,
           },
           created_at: new Date(),
-        });
+        }).catch(err => console.error('❌ Audit error:', err));
       }
     } catch (error) {
       console.error('❌ Error in messageCreate:', error);
@@ -239,7 +237,7 @@ function setupEventListeners(client) {
       const guildModules = global.botCache.modules[message.guildId] || {};
 
       if (guildModules.security) {
-        await supabase.from('audit_log_entries').insert({
+        supabase.from('audit_log_entries').insert({
           guild_id: message.guildId,
           user_id: message.author?.id,
           action_type: 'message_delete',
@@ -250,7 +248,7 @@ function setupEventListeners(client) {
             author: message.author?.username,
           },
           created_at: new Date(),
-        });
+        }).catch(err => console.error('❌ Delete audit error:', err));
       }
     } catch (error) {
       console.error('❌ Error in messageDelete:', error);
@@ -267,7 +265,7 @@ function setupEventListeners(client) {
       const guildModules = global.botCache.modules[newMessage.guildId] || {};
 
       if (guildModules.security) {
-        await supabase.from('audit_log_entries').insert({
+        supabase.from('audit_log_entries').insert({
           guild_id: newMessage.guildId,
           user_id: newMessage.author?.id,
           action_type: 'message_update',
@@ -278,7 +276,7 @@ function setupEventListeners(client) {
             channel_id: newMessage.channelId,
           },
           created_at: new Date(),
-        });
+        }).catch(err => console.error('❌ Update audit error:', err));
       }
     } catch (error) {
       console.error('❌ Error in messageUpdate:', error);
@@ -306,9 +304,9 @@ function setupEventListeners(client) {
           if (reaction.count >= starboard.threshold) {
             const starboardChannel = reaction.message.guild.channels.cache.get(starboard.channel_id);
             if (starboardChannel) {
-              await starboardChannel.send(
+              starboardChannel.send(
                 `⭐ **${reaction.message.author.username}**: ${reaction.message.content}\n[Jump to message](${reaction.message.url})`
-              );
+              ).catch(err => console.error('❌ Starboard send error:', err));
             }
           }
         }
@@ -325,11 +323,11 @@ function setupEventListeners(client) {
         if (poll) {
           const option = reaction.emoji.name === '1️⃣' ? 'option1' : reaction.emoji.name === '2️⃣' ? 'option2' : null;
           if (option) {
-            await supabase.from('poll_votes').insert({
+            supabase.from('poll_votes').insert({
               poll_id: poll.id,
               user_id: user.id,
               option,
-            });
+            }).catch(err => console.error('❌ Poll vote error:', err));
           }
         }
       }
@@ -364,20 +362,6 @@ function setupEventListeners(client) {
     try {
       const guildModules = global.botCache.modules[reaction.message.guildId] || {};
 
-      // PLUGIN: Starboard - remove if below threshold
-      if (guildModules.plugin) {
-        const { data: starboard } = await supabase
-          .from('starboard_settings')
-          .select('*')
-          .eq('guild_id', reaction.message.guildId)
-          .single();
-
-        if (starboard && reaction.emoji.name === '⭐' && reaction.count < starboard.threshold) {
-          // Remove from starboard (implementation depends on your setup)
-        }
-      }
-
-      // PLUGIN: Polls - update vote count
       if (guildModules.plugin) {
         const { data: poll } = await supabase
           .from('polls')
@@ -388,7 +372,8 @@ function setupEventListeners(client) {
         if (poll) {
           const option = reaction.emoji.name === '1️⃣' ? 'option1' : reaction.emoji.name === '2️⃣' ? 'option2' : null;
           if (option) {
-            await supabase.from('poll_votes').delete().eq('poll_id', poll.id).eq('user_id', user.id).eq('option', option);
+            supabase.from('poll_votes').delete().eq('poll_id', poll.id).eq('user_id', user.id).eq('option', option)
+              .catch(err => console.error('❌ Poll vote remove error:', err));
           }
         }
       }
@@ -415,16 +400,16 @@ function setupEventListeners(client) {
         if (verifySettings) {
           const verifyChannel = member.guild.channels.cache.get(verifySettings.channel_id);
           if (verifyChannel) {
-            await verifyChannel.send(
+            verifyChannel.send(
               `👋 Welcome ${member.user.username}! React with ✅ to verify and access the server.`
-            );
+            ).catch(err => console.error('❌ Verify message error:', err));
           }
         }
       }
 
       // SECURITY: Logging
       if (guildModules.security) {
-        await supabase.from('audit_log_entries').insert({
+        supabase.from('audit_log_entries').insert({
           guild_id: member.guild.id,
           user_id: member.id,
           action_type: 'member_join',
@@ -434,7 +419,7 @@ function setupEventListeners(client) {
             account_created: member.user.createdAt,
           },
           created_at: new Date(),
-        });
+        }).catch(err => console.error('❌ Member join audit error:', err));
       }
 
       // UTILITY: Auto-assign roles
@@ -466,7 +451,7 @@ function setupEventListeners(client) {
       const guildModules = global.botCache.modules[member.guild.id] || {};
 
       if (guildModules.security) {
-        await supabase.from('audit_log_entries').insert({
+        supabase.from('audit_log_entries').insert({
           guild_id: member.guild.id,
           user_id: member.id,
           action_type: 'member_leave',
@@ -475,7 +460,7 @@ function setupEventListeners(client) {
             username: member.user.username,
           },
           created_at: new Date(),
-        });
+        }).catch(err => console.error('❌ Member leave audit error:', err));
       }
     } catch (error) {
       console.error('❌ Error in guildMemberRemove:', error);
@@ -490,12 +475,11 @@ function setupEventListeners(client) {
       const guildModules = global.botCache.modules[newMember.guild.id] || {};
 
       if (guildModules.security) {
-        // Check for role changes
         const addedRoles = newMember.roles.cache.filter(role => !oldMember.roles.cache.has(role.id));
         const removedRoles = oldMember.roles.cache.filter(role => !newMember.roles.cache.has(role.id));
 
         if (addedRoles.size > 0 || removedRoles.size > 0) {
-          await supabase.from('audit_log_entries').insert({
+          supabase.from('audit_log_entries').insert({
             guild_id: newMember.guild.id,
             user_id: newMember.id,
             action_type: 'member_role_update',
@@ -505,12 +489,11 @@ function setupEventListeners(client) {
               removed_roles: removedRoles.map(r => r.name),
             },
             created_at: new Date(),
-          });
+          }).catch(err => console.error('❌ Role update audit error:', err));
         }
 
-        // Check for nickname change
         if (oldMember.nickname !== newMember.nickname) {
-          await supabase.from('audit_log_entries').insert({
+          supabase.from('audit_log_entries').insert({
             guild_id: newMember.guild.id,
             user_id: newMember.id,
             action_type: 'member_nickname_update',
@@ -520,7 +503,7 @@ function setupEventListeners(client) {
               new_nickname: newMember.nickname,
             },
             created_at: new Date(),
-          });
+          }).catch(err => console.error('❌ Nickname update audit error:', err));
         }
       }
     } catch (error) {
@@ -537,8 +520,7 @@ function setupEventListeners(client) {
 
       if (guildModules.security) {
         if (!oldState.channel && newState.channel) {
-          // User joined voice channel
-          await supabase.from('audit_log_entries').insert({
+          supabase.from('audit_log_entries').insert({
             guild_id: newState.guild.id,
             user_id: newState.member.id,
             action_type: 'voice_join',
@@ -547,10 +529,9 @@ function setupEventListeners(client) {
               channel_name: newState.channel.name,
             },
             created_at: new Date(),
-          });
+          }).catch(err => console.error('❌ Voice join audit error:', err));
         } else if (oldState.channel && !newState.channel) {
-          // User left voice channel
-          await supabase.from('audit_log_entries').insert({
+          supabase.from('audit_log_entries').insert({
             guild_id: newState.guild.id,
             user_id: newState.member.id,
             action_type: 'voice_leave',
@@ -559,7 +540,7 @@ function setupEventListeners(client) {
               channel_name: oldState.channel.name,
             },
             created_at: new Date(),
-          });
+          }).catch(err => console.error('❌ Voice leave audit error:', err));
         }
       }
     } catch (error) {
@@ -575,7 +556,7 @@ function setupEventListeners(client) {
       const guildModules = global.botCache.modules[channel.guild.id] || {};
 
       if (guildModules.security) {
-        await supabase.from('audit_log_entries').insert({
+        supabase.from('audit_log_entries').insert({
           guild_id: channel.guild.id,
           action_type: 'channel_create',
           target_id: channel.id,
@@ -584,7 +565,7 @@ function setupEventListeners(client) {
             channel_type: channel.type,
           },
           created_at: new Date(),
-        });
+        }).catch(err => console.error('❌ Channel create audit error:', err));
       }
     } catch (error) {
       console.error('❌ Error in channelCreate:', error);
@@ -599,7 +580,7 @@ function setupEventListeners(client) {
       const guildModules = global.botCache.modules[channel.guild.id] || {};
 
       if (guildModules.security) {
-        await supabase.from('audit_log_entries').insert({
+        supabase.from('audit_log_entries').insert({
           guild_id: channel.guild.id,
           action_type: 'channel_delete',
           target_id: channel.id,
@@ -608,7 +589,7 @@ function setupEventListeners(client) {
             channel_type: channel.type,
           },
           created_at: new Date(),
-        });
+        }).catch(err => console.error('❌ Channel delete audit error:', err));
       }
     } catch (error) {
       console.error('❌ Error in channelDelete:', error);
@@ -623,7 +604,7 @@ function setupEventListeners(client) {
       const guildModules = global.botCache.modules[role.guild.id] || {};
 
       if (guildModules.security) {
-        await supabase.from('audit_log_entries').insert({
+        supabase.from('audit_log_entries').insert({
           guild_id: role.guild.id,
           action_type: 'role_create',
           target_id: role.id,
@@ -632,7 +613,7 @@ function setupEventListeners(client) {
             role_color: role.color,
           },
           created_at: new Date(),
-        });
+        }).catch(err => console.error('❌ Role create audit error:', err));
       }
     } catch (error) {
       console.error('❌ Error in roleCreate:', error);
@@ -647,7 +628,7 @@ function setupEventListeners(client) {
       const guildModules = global.botCache.modules[role.guild.id] || {};
 
       if (guildModules.security) {
-        await supabase.from('audit_log_entries').insert({
+        supabase.from('audit_log_entries').insert({
           guild_id: role.guild.id,
           action_type: 'role_delete',
           target_id: role.id,
@@ -655,7 +636,7 @@ function setupEventListeners(client) {
             role_name: role.name,
           },
           created_at: new Date(),
-        });
+        }).catch(err => console.error('❌ Role delete audit error:', err));
       }
     } catch (error) {
       console.error('❌ Error in roleDelete:', error);
@@ -670,7 +651,7 @@ function setupEventListeners(client) {
       const guildModules = global.botCache.modules[ban.guild.id] || {};
 
       if (guildModules.security) {
-        await supabase.from('audit_log_entries').insert({
+        supabase.from('audit_log_entries').insert({
           guild_id: ban.guild.id,
           user_id: ban.user.id,
           action_type: 'member_ban',
@@ -680,7 +661,7 @@ function setupEventListeners(client) {
             reason: ban.reason,
           },
           created_at: new Date(),
-        });
+        }).catch(err => console.error('❌ Ban audit error:', err));
       }
     } catch (error) {
       console.error('❌ Error in guildBanAdd:', error);
@@ -695,7 +676,7 @@ function setupEventListeners(client) {
       const guildModules = global.botCache.modules[ban.guild.id] || {};
 
       if (guildModules.security) {
-        await supabase.from('audit_log_entries').insert({
+        supabase.from('audit_log_entries').insert({
           guild_id: ban.guild.id,
           user_id: ban.user.id,
           action_type: 'member_unban',
@@ -704,7 +685,7 @@ function setupEventListeners(client) {
             username: ban.user.username,
           },
           created_at: new Date(),
-        });
+        }).catch(err => console.error('❌ Unban audit error:', err));
       }
     } catch (error) {
       console.error('❌ Error in guildBanRemove:', error);
