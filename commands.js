@@ -463,6 +463,72 @@ function replaceVariables(response, user, guild) {
     .replace(/{date}/g, new Date().toLocaleDateString())
     .replace(/{time}/g, new Date().toLocaleTimeString());
 }
+async function handleCommand(interaction) {
+  // ⚡ DEFER IMMEDIATELY - FIRST LINE - NO EXCEPTIONS!
+  await interaction.deferReply();
+
+  const startTime = Date.now();
+  const { commandName } = interaction;
+  console.log(`📝 [${new Date().toISOString()}] Command started: ${commandName}`);
+
+  try {
+    // ============================================
+    // CUSTOM COMMANDS EXECUTION (FAST PATH)
+    // ============================================
+    const { data: customCmd, error: customError } = await supabase
+      .from('custom_commands')
+      .select('*')
+      .eq('guild_id', interaction.guildId)
+      .eq('name', commandName)
+      .single();
+
+    if (customCmd && !customError) {
+      const response = replaceVariables(customCmd.response, interaction.user, interaction.guild);
+      await interaction.editReply(response);
+      console.log(`✅ Custom command executed: ${commandName}`);
+      return;
+    }
+
+    // ============================================
+    // WORKFLOW EXECUTION (FAST PATH)
+    // ============================================
+    if (commandName.startsWith('wf-')) {
+      const workflowId = commandName.replace('wf-', '');
+      const { data: workflow, error: workflowError } = await supabase
+        .from('workflows')
+        .select('*')
+        .eq('guild_id', interaction.guildId)
+        .like('id', `${workflowId}%`)
+        .eq('enabled', true)
+        .single();
+
+      if (workflow && !workflowError) {
+        await interaction.editReply(`⚙️ Executing workflow: ${workflow.trigger} → ${workflow.action}`);
+
+        // Log workflow execution (fire and forget)
+        supabase.from('workflow_logs').insert({
+          guild_id: interaction.guildId,
+          workflow_id: workflow.id,
+          trigger_data: { command: commandName },
+          action_result: 'executed',
+          created_at: new Date(),
+        }).catch(err => console.error('❌ Workflow log error:', err.message));
+
+        console.log(`✅ Workflow executed: ${workflow.id}`);
+        return;
+      }
+    }
+
+    // ... rest of command handling ...
+  } catch (error) {
+    console.error('❌ Error handling command:', error);
+    try {
+      await interaction.editReply('❌ An error occurred');
+    } catch (e) {
+      console.error('Failed to send error reply:', e.message);
+    }
+  }
+}
 
 // CRITICAL: Handle commands with INSTANT RESPONSE
 async function handleCommand(interaction) {
@@ -1038,72 +1104,3 @@ async function handleCommand(interaction) {
     }
   }
 }
-async function handleCommand(interaction) {
-  // ⚡ DEFER IMMEDIATELY - FIRST LINE - NO EXCEPTIONS!
-  await interaction.deferReply();
-
-  const startTime = Date.now();
-  const { commandName } = interaction;
-  console.log(`📝 [${new Date().toISOString()}] Command started: ${commandName}`);
-
-  try {
-    // ============================================
-    // CUSTOM COMMANDS EXECUTION (FAST PATH)
-    // ============================================
-    const { data: customCmd, error: customError } = await supabase
-      .from('custom_commands')
-      .select('*')
-      .eq('guild_id', interaction.guildId)
-      .eq('name', commandName)
-      .single();
-
-    if (customCmd && !customError) {
-      const response = replaceVariables(customCmd.response, interaction.user, interaction.guild);
-      await interaction.editReply(response);
-      console.log(`✅ Custom command executed: ${commandName}`);
-      return;
-    }
-
-    // ============================================
-    // WORKFLOW EXECUTION (FAST PATH)
-    // ============================================
-    if (commandName.startsWith('wf-')) {
-      const workflowId = commandName.replace('wf-', '');
-      const { data: workflow, error: workflowError } = await supabase
-        .from('workflows')
-        .select('*')
-        .eq('guild_id', interaction.guildId)
-        .like('id', `${workflowId}%`)
-        .eq('enabled', true)
-        .single();
-
-      if (workflow && !workflowError) {
-        await interaction.editReply(`⚙️ Executing workflow: ${workflow.trigger} → ${workflow.action}`);
-
-        // Log workflow execution (fire and forget)
-        supabase.from('workflow_logs').insert({
-          guild_id: interaction.guildId,
-          workflow_id: workflow.id,
-          trigger_data: { command: commandName },
-          action_result: 'executed',
-          created_at: new Date(),
-        }).catch(err => console.error('❌ Workflow log error:', err.message));
-
-        console.log(`✅ Workflow executed: ${workflow.id}`);
-        return;
-      }
-    }
-
-    // ... rest of command handling ...
-  } catch (error) {
-    console.error('❌ Error handling command:', error);
-    try {
-      await interaction.editReply('❌ An error occurred');
-    } catch (e) {
-      console.error('Failed to send error reply:', e.message);
-    }
-  }
-}
-
-module.exports = { registerCommandsForGuild, handleCommand, COMMANDS, replaceVariables };
-
