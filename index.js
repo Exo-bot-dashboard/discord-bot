@@ -7,7 +7,12 @@ import {
   SlashCommandBuilder,
 } from "discord.js";
 import { createClient } from "@supabase/supabase-js";
+const { setBotStatus } = require('./status');
 
+client.once('ready', () => {
+  console.log(`Logged in as ${client.user.tag}`);
+  setBotStatus(client);
+});
 const {
   DISCORD_TOKEN,
   DISCORD_APP_ID,
